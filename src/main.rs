@@ -1,6 +1,7 @@
 #![feature(slice_flatten)]
 
 mod repeat_sequence;
+use postgres::NoTls;
 use repeat_sequence::RepeatSequenceGame;
 mod custom_game;
 use custom_game::CustomGame;
@@ -42,8 +43,18 @@ fn setup(
     dimensions: Res<DimensionTypeRegistry>,
     biomes: Res<BiomeRegistry>,
 ) {
+    let mut c = postgres::Client::connect("host=localhost user=postgres", NoTls).unwrap();
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS rsg_games (
+        date TIMESTAMP,
+        size INT,
+        streak INT,
+        player_uuid BYTEA
+);",
+        &[],
+    )
+    .unwrap();
     let mut layer = LayerBundle::new(ident!("overworld"), &dimensions, &biomes, &server);
-
     for z in -5..5 {
         for x in -5..5 {
             layer.chunk.insert_chunk([x, z], UnloadedChunk::new());
@@ -55,17 +66,6 @@ fn setup(
             layer.chunk.set_block([x, 64, z], BlockState::GRASS_BLOCK);
         }
     }
-
-    // layer.chunk.set_block(
-    //     (0, 65, 0),
-    //     Block::new(
-    //         BlockState::OAK_BUTTON
-    //             .set(PropName::Facing, PropValue::Up)
-    //             .set(PropName::Face, PropValue::Floor),
-    //         None,
-    //     ),
-    // );
-
     commands.spawn(layer);
 }
 
@@ -102,20 +102,28 @@ fn init_clients(
 
 fn item_use_listener(
     mut item_interacts: EventReader<InteractItemEvent>,
-    players: Query<(&Look, &Inventory, &HeldItem, &Position, &VisibleChunkLayer)>,
+    players: Query<(
+        &Look,
+        &Inventory,
+        &HeldItem,
+        &Position,
+        &VisibleChunkLayer,
+        &UniqueId,
+    )>,
     mut layers: Query<&mut ChunkLayer>,
     mut commands: Commands,
 ) {
     for interaction in item_interacts.iter() {
-        let (look, inv, held_item, pos, player_layer) = players.get(interaction.client).unwrap();
+        let (look, inv, held_item, pos, player_layer, uuid) =
+            players.get(interaction.client).unwrap();
         let held_item = inv.slot(held_item.slot());
         let layer: &mut ChunkLayer = layers.get_mut(player_layer.0).unwrap().into_inner();
         if held_item.item == ItemKind::Stick {
-            let rsg5 = RepeatSequenceGame::<5>::new(pos, look.yaw, interaction.client);
+            let rsg5 = RepeatSequenceGame::<5>::new(pos, look.yaw, (interaction.client, *uuid));
             rsg5.build_blocks(layer);
             commands.spawn(CustomGameContainer(Box::new(rsg5)));
         } else if held_item.item == ItemKind::Diamond {
-            let rsg7 = RepeatSequenceGame::<3>::new(pos, look.yaw, interaction.client);
+            let rsg7 = RepeatSequenceGame::<3>::new(pos, look.yaw, (interaction.client, *uuid));
             rsg7.build_blocks(layer);
             commands.spawn(CustomGameContainer(Box::new(rsg7)));
         }

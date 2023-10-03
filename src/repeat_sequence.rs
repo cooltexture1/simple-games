@@ -1,3 +1,6 @@
+use std::time::SystemTime;
+
+use postgres::{Client, NoTls};
 use rand::Rng;
 use valence::{
     prelude::*,
@@ -18,7 +21,7 @@ pub struct RepeatSequenceGame<const DIM: usize> {
     wall_blocks: [[BlockPos; DIM]; DIM],
     button_blocks: [[BlockPos; DIM]; DIM],
     sequence: Vec<(BlockPos, BlockPos)>,
-    player: Entity,
+    player: (Entity, UniqueId),
     state: GameState,
     ticks: usize,
     input_progres: usize,
@@ -28,7 +31,7 @@ pub struct RepeatSequenceGame<const DIM: usize> {
 
 impl<const DIM: usize> RepeatSequenceGame<DIM> {
     ///the position of the player starting the game, their yaw, and their entity
-    pub fn new(pos: &Position, yaw: f32, player: Entity) -> RepeatSequenceGame<DIM> {
+    pub fn new(pos: &Position, yaw: f32, player: (Entity, UniqueId)) -> RepeatSequenceGame<DIM> {
         let normalized_angle = yaw - (360.0 * yaw.div_euclid(360.0));
         let dir_num = (normalized_angle / 90.0).round();
         let dir = match dir_num as isize {
@@ -49,7 +52,7 @@ impl<const DIM: usize> RepeatSequenceGame<DIM> {
     pub fn new_with_bottom_left(
         bottom_left: BlockPos,
         dir: Direction,
-        player: Entity,
+        player: (Entity, UniqueId),
     ) -> RepeatSequenceGame<DIM> {
         let (wall_blocks, button_blocks) = Self::get_block_positions(&dir, &bottom_left);
         RepeatSequenceGame {
@@ -146,6 +149,19 @@ impl<const DIM: usize> CustomGame for RepeatSequenceGame<DIM> {
         for block in self.button_blocks.flatten() {
             layer.set_block(*block, BlockState::AIR);
         }
+        let mut c = Client::connect("host=localhost user=postgres", NoTls).unwrap();
+        let time = SystemTime::now();
+        // TODO use the result
+        c.execute(
+            "INSERT INTO rsg_games (date, size, streak, player_uuid) VALUES ($1, $2, $3, $4)",
+            &[
+                &time,
+                &(DIM as i32),
+                &(self.sequence.len() as i32),
+                &self.player.1.as_bytes().as_ref(),
+            ],
+        )
+        .unwrap();
     }
 
     fn should_despawn(&self) -> bool {
@@ -191,7 +207,7 @@ impl<const DIM: usize> CustomGame for RepeatSequenceGame<DIM> {
     }
 
     fn click(&mut self, click_pos: &BlockPos, player: Entity, layer: &mut ChunkLayer) {
-        if player == self.player
+        if player == self.player.0
             && self.state == GameState::WaitForInput
             && self.button_blocks.flatten().contains(&click_pos)
         {
