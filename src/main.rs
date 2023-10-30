@@ -1,20 +1,25 @@
 #![feature(slice_flatten)]
 
-mod repeat_sequence;
-use postgres::NoTls;
-use repeat_sequence::RepeatSequenceGame;
 mod custom_game;
-use custom_game::CustomGame;
+mod items;
+mod minesweeper;
+mod postgres_wrapper;
+mod repeat_sequence;
+
+use items::*;
+use minesweeper::MineSweeperGame;
+use postgres::NoTls;
+use postgres_wrapper::PostgresWrapper;
+use repeat_sequence::RepeatSequenceGame;
 
 use valence::{
-    interact_block::InteractBlockEvent,
     interact_item::InteractItemEvent,
     inventory::HeldItem,
     log::{Level, LogPlugin},
     prelude::*,
 };
 
-use custom_game::CustomGameContainer;
+use custom_game::{CustomGameContainer, CustomGamePlugin};
 
 fn main() {
     App::new()
@@ -29,11 +34,9 @@ fn main() {
                 init_clients,
                 despawn_disconnected_clients,
                 item_use_listener,
-                on_block_click,
-                tick_games,
-                despawn_games,
             ),
         )
+        .add_plugins(CustomGamePlugin)
         .run();
 }
 
@@ -43,17 +46,21 @@ fn setup(
     dimensions: Res<DimensionTypeRegistry>,
     biomes: Res<BiomeRegistry>,
 ) {
-    let mut c = postgres::Client::connect("host=localhost user=postgres", NoTls).unwrap();
-    c.execute(
-        "CREATE TABLE IF NOT EXISTS rsg_games (
+    if let Ok(mut c) = postgres::Client::connect("host=localhost user=postgres", NoTls) {
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS rsg_games (
         date TIMESTAMP,
         size INT,
         streak INT,
         player_uuid BYTEA
 );",
-        &[],
-    )
-    .unwrap();
+            &[],
+        )
+        .unwrap();
+    } else {
+        tracing::warn!("Couldnt establish database connection");
+    }
+
     let mut layer = LayerBundle::new(ident!("overworld"), &dimensions, &biomes, &server);
     for z in -5..5 {
         for x in -5..5 {
@@ -77,10 +84,14 @@ fn init_clients(
             &mut VisibleEntityLayers,
             &mut Position,
             &mut GameMode,
+            &mut Client,
+            &mut Inventory,
+            &UniqueId,
         ),
         Added<Client>,
     >,
     layers: Query<Entity, (With<ChunkLayer>, With<EntityLayer>)>,
+    database: Local<PostgresWrapper>,
 ) {
     for (
         mut layer_id,
@@ -88,6 +99,9 @@ fn init_clients(
         mut visible_entity_layers,
         mut pos,
         mut game_mode,
+        mut client,
+        mut inv,
+        uuid,
     ) in &mut clients
     {
         let layer = layers.single();
@@ -97,68 +111,43 @@ fn init_clients(
         visible_entity_layers.0.insert(layer);
         pos.set([0.0, 65.0, 0.0]);
         *game_mode = GameMode::Creative;
+
+        for e in StartItemType::all_types() {
+            let slot_num = inv.first_empty_slot_in(36..45).unwrap();
+            inv.set_slot(slot_num, StartItemType::create_start_item(e));
+        }
+
+        if let Some(streak) = database.get_highest_streak(uuid) {
+            client.send_chat_message(format!("Your Highest Streak: {}", streak));
+        }
     }
 }
 
 fn item_use_listener(
     mut item_interacts: EventReader<InteractItemEvent>,
-    players: Query<(
-        &Look,
-        &Inventory,
-        &HeldItem,
-        &Position,
-        &VisibleChunkLayer,
-        &UniqueId,
-    )>,
-    mut layers: Query<&mut ChunkLayer>,
+    players: Query<(&Look, &Inventory, &HeldItem, &Position, &UniqueId)>,
     mut commands: Commands,
 ) {
     for interaction in item_interacts.iter() {
-        let (look, inv, held_item, pos, player_layer, uuid) =
-            players.get(interaction.client).unwrap();
+        let (look, inv, held_item, pos, uuid) = players.get(interaction.client).unwrap();
         let held_item = inv.slot(held_item.slot());
-        let layer: &mut ChunkLayer = layers.get_mut(player_layer.0).unwrap().into_inner();
-        if held_item.item == ItemKind::Stick {
-            let rsg5 = RepeatSequenceGame::<5>::new(pos, look.yaw, (interaction.client, *uuid));
-            rsg5.build_blocks(layer);
-            commands.spawn(CustomGameContainer(Box::new(rsg5)));
-        } else if held_item.item == ItemKind::Diamond {
-            let rsg7 = RepeatSequenceGame::<3>::new(pos, look.yaw, (interaction.client, *uuid));
-            rsg7.build_blocks(layer);
-            commands.spawn(CustomGameContainer(Box::new(rsg7)));
+        if let Some(item_type) = StartItemType::get_start_item_type(held_item) {
+            match item_type {
+                StartItemType::RSG5 => {
+                    let rsg5 =
+                        RepeatSequenceGame::<5>::new(pos, look.yaw, (interaction.client, *uuid));
+                    commands.spawn(CustomGameContainer(Box::new(rsg5)));
+                }
+                StartItemType::RSG7 => {
+                    let rsg7 =
+                        RepeatSequenceGame::<7>::new(pos, look.yaw, (interaction.client, *uuid));
+                    commands.spawn(CustomGameContainer(Box::new(rsg7)));
+                }
+                StartItemType::Minesweeper => {
+                    let msg = MineSweeperGame::<12>::new(pos, (interaction.client, *uuid));
+                    commands.spawn(CustomGameContainer(Box::new(msg)));
+                }
+            }
         }
-    }
-}
-
-fn tick_games(mut games: Query<&mut CustomGameContainer>, mut layer: Query<&mut ChunkLayer>) {
-    games.for_each_mut(|mut g| g.tick(layer.single_mut().into_inner()));
-}
-
-fn despawn_games(
-    mut games: Query<(Entity, &mut CustomGameContainer)>,
-    mut layer: Query<&mut ChunkLayer>,
-    mut commands: Commands,
-) {
-    games.for_each_mut(|g| {
-        if g.1.should_despawn() {
-            g.1.reset(layer.single_mut().into_inner());
-            commands.entity(g.0).despawn()
-        }
-    });
-}
-
-fn on_block_click(
-    mut block_interacts: EventReader<InteractBlockEvent>,
-    mut games: Query<&mut CustomGameContainer>,
-    mut layer: Query<&mut ChunkLayer>,
-) {
-    for interaction in block_interacts.iter() {
-        games.for_each_mut(|rsg| {
-            rsg.into_inner().0.click(
-                &interaction.position,
-                interaction.client,
-                layer.single_mut().into_inner(),
-            )
-        });
     }
 }

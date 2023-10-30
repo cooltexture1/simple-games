@@ -1,13 +1,13 @@
-use std::time::SystemTime;
-
-use postgres::{Client, NoTls};
 use rand::Rng;
 use valence::{
     prelude::*,
     protocol::{sound::SoundCategory, Sound},
 };
 
-use crate::custom_game::CustomGame;
+use crate::{
+    custom_game::{BuildGameError, CustomGame},
+    postgres_wrapper::PostgresWrapper,
+};
 
 #[derive(PartialEq)]
 pub enum GameState {
@@ -20,6 +20,7 @@ pub struct RepeatSequenceGame<const DIM: usize> {
     dir: Direction,
     wall_blocks: [[BlockPos; DIM]; DIM],
     button_blocks: [[BlockPos; DIM]; DIM],
+    is_built: bool,
     sequence: Vec<(BlockPos, BlockPos)>,
     player: (Entity, UniqueId),
     state: GameState,
@@ -59,6 +60,7 @@ impl<const DIM: usize> RepeatSequenceGame<DIM> {
             dir,
             player,
             sequence: Vec::new(),
+            is_built: false,
             wall_blocks,
             button_blocks,
             state: GameState::Idle,
@@ -142,26 +144,15 @@ impl<const DIM: usize> RepeatSequenceGame<DIM> {
 }
 
 impl<const DIM: usize> CustomGame for RepeatSequenceGame<DIM> {
-    fn reset(&self, layer: &mut ChunkLayer) {
+    fn reset(&self, layer: &mut ChunkLayer, pgsql: &mut PostgresWrapper) {
         for block in self.wall_blocks.flatten() {
             layer.set_block(*block, BlockState::AIR);
         }
         for block in self.button_blocks.flatten() {
             layer.set_block(*block, BlockState::AIR);
         }
-        let mut c = Client::connect("host=localhost user=postgres", NoTls).unwrap();
-        let time = SystemTime::now();
-        // TODO use the result
-        c.execute(
-            "INSERT INTO rsg_games (date, size, streak, player_uuid) VALUES ($1, $2, $3, $4)",
-            &[
-                &time,
-                &(DIM as i32),
-                &(self.sequence.len() as i32),
-                &self.player.1.as_bytes().as_ref(),
-            ],
-        )
-        .unwrap();
+
+        pgsql.insert_rsg(DIM as i32, self.sequence.len() as i32, self.player.1);
     }
 
     fn should_despawn(&self) -> bool {
@@ -230,11 +221,31 @@ impl<const DIM: usize> CustomGame for RepeatSequenceGame<DIM> {
         }
     }
 
-    fn build_blocks(&self, layer: &mut ChunkLayer) {
+    fn build_blocks(&mut self, layer: &mut ChunkLayer) -> Result<(), BuildGameError> {
         let opp_dir = opposite_dir(&self.dir);
         let wall_posistions = self.wall_blocks.flatten();
         let button_positions = self.button_blocks.flatten();
 
+        for pos in wall_posistions {
+            if layer.block(*pos)
+                != Some(BlockRef {
+                    state: BlockState::AIR,
+                    nbt: None,
+                })
+            {
+                return Err(BuildGameError::BlocksInTheWay);
+            }
+        }
+        for pos in button_positions {
+            if layer.block(*pos)
+                != Some(BlockRef {
+                    state: BlockState::AIR,
+                    nbt: None,
+                })
+            {
+                return Err(BuildGameError::BlocksInTheWay);
+            }
+        }
         for pos in wall_posistions {
             layer.set_block(*pos, BlockState::STONE);
         }
@@ -254,6 +265,12 @@ impl<const DIM: usize> CustomGame for RepeatSequenceGame<DIM> {
                     .set(PropName::Facing, button_dir),
             );
         }
+        self.is_built = true;
+        Ok(())
+    }
+
+    fn get_player(&self) -> (Entity, UniqueId) {
+        self.player
     }
 }
 
