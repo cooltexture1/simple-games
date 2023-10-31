@@ -144,7 +144,7 @@ fn item_use_listener(
                     commands.spawn(CustomGameContainer(Box::new(rsg7)));
                 }
                 StartItemType::Minesweeper => {
-                    let msg = MineSweeperGame::<12>::new(pos, (interaction.client, *uuid));
+                    let msg = MineSweeperGame::<20>::new(pos, (interaction.client, *uuid));
                     commands.spawn(CustomGameContainer(Box::new(msg)));
                 }
             }
