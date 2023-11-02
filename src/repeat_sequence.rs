@@ -196,8 +196,9 @@ impl<const DIM: usize> CustomGame for RepeatSequenceGame<DIM> {
             }
         }
     }
+    fn click_left(&mut self, _click_pos: &BlockPos, player: Entity, _layer: &mut ChunkLayer) {}
 
-    fn click(&mut self, click_pos: &BlockPos, player: Entity, layer: &mut ChunkLayer) {
+    fn click_right(&mut self, click_pos: &BlockPos, player: Entity, layer: &mut ChunkLayer) {
         if player == self.player.0
             && self.state == GameState::WaitForInput
             && self.button_blocks.flatten().contains(&click_pos)

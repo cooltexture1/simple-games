@@ -16,6 +16,7 @@ impl Plugin for CustomGamePlugin {
                 tick_games,
                 despawn_games,
                 on_block_click,
+                on_block_break,
                 build_spawned_games,
             ),
         );
@@ -48,7 +49,23 @@ fn on_block_click(
 ) {
     for interaction in block_interacts.iter() {
         games.for_each_mut(|rsg| {
-            rsg.into_inner().0.click(
+            rsg.into_inner().0.click_right(
+                &interaction.position,
+                interaction.client,
+                layer.single_mut().into_inner(),
+            )
+        });
+    }
+}
+
+fn on_block_break(
+    mut block_interacts: EventReader<DiggingEvent>,
+    mut games: Query<&mut CustomGameContainer>,
+    mut layer: Query<&mut ChunkLayer>,
+) {
+    for interaction in block_interacts.iter() {
+        games.for_each_mut(|rsg| {
+            rsg.into_inner().0.click_left(
                 &interaction.position,
                 interaction.client,
                 layer.single_mut().into_inner(),
@@ -96,7 +113,8 @@ pub trait CustomGame {
 
     fn tick(&mut self, layer: &mut ChunkLayer);
 
-    fn click(&mut self, click_pos: &BlockPos, player: Entity, layer: &mut ChunkLayer);
+    fn click_right(&mut self, click_pos: &BlockPos, player: Entity, layer: &mut ChunkLayer);
+    fn click_left(&mut self, click_pos: &BlockPos, player: Entity, layer: &mut ChunkLayer);
 
     fn reset(&self, layer: &mut ChunkLayer, pgsql: &mut PostgresWrapper);
 

@@ -120,6 +120,13 @@ fn init_clients(
         if let Some(streak) = database.get_highest_streak(uuid) {
             client.send_chat_message(format!("Your Highest Streak: {}", streak));
         }
+
+        client.set_resource_pack(
+            "https://bits-mampfer.eu/tubnet-tourneys/minesweeper_resources.zip",
+            "1a4572a45c4a24d94970ff13ef1499950bb721bc",
+            true,
+            Some(Text::from("Install the minesweeper textures?")),
+        );
     }
 }
 
