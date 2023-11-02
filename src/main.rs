@@ -3,11 +3,13 @@
 mod custom_game;
 mod items;
 mod minesweeper;
+mod minesweeper3d;
 mod postgres_wrapper;
 mod repeat_sequence;
 
 use items::*;
 use minesweeper::MineSweeperGame;
+use minesweeper3d::MineSweeperGame3d;
 use postgres::NoTls;
 use postgres_wrapper::PostgresWrapper;
 use repeat_sequence::RepeatSequenceGame;
@@ -152,6 +154,10 @@ fn item_use_listener(
                 }
                 StartItemType::Minesweeper => {
                     let msg = MineSweeperGame::<20>::new(pos, (interaction.client, *uuid));
+                    commands.spawn(CustomGameContainer(Box::new(msg)));
+                }
+                StartItemType::Minesweeper3D => {
+                    let msg = MineSweeperGame3d::<20>::new(pos, (interaction.client, *uuid));
                     commands.spawn(CustomGameContainer(Box::new(msg)));
                 }
             }

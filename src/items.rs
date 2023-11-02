@@ -7,6 +7,7 @@ pub enum StartItemType {
     RSG5,
     RSG7,
     Minesweeper,
+    Minesweeper3D,
 }
 
 impl StartItemType {
@@ -15,6 +16,7 @@ impl StartItemType {
             StartItemType::RSG5,
             StartItemType::RSG7,
             StartItemType::Minesweeper,
+            StartItemType::Minesweeper3D,
         ]
     }
 
@@ -28,6 +30,7 @@ impl StartItemType {
                     "\"Repeat Sequence 5x5\"" => Some(StartItemType::RSG5),
                     "\"Repeat Sequence 7x7\"" => Some(StartItemType::RSG7),
                     "\"Minesweeper\"" => Some(StartItemType::Minesweeper),
+                    "\"Minesweeper3d\"" => Some(StartItemType::Minesweeper3D),
                     _ => None,
                 }
             } else {
@@ -65,6 +68,15 @@ impl StartItemType {
                 Some(compound! {
                     "display" => compound! {
                         "Name" => "\"Minesweeper\"",
+                    }
+                }),
+            ),
+            StartItemType::Minesweeper3D => ItemStack::new(
+                ItemKind::Stick,
+                1,
+                Some(compound! {
+                    "display" => compound! {
+                        "Name" => "\"Minesweeper3d\"",
                     }
                 }),
             ),
