@@ -1,3 +1,4 @@
+use super::common::*;
 use crate::custom_game::{BuildGameError, CustomGame};
 use itertools::Itertools;
 use rand::Rng;
@@ -5,29 +6,6 @@ use valence::{
     prelude::*,
     protocol::{sound::SoundCategory, Sound},
 };
-
-#[derive(PartialEq, Copy, Clone, Debug, Default)]
-enum CellContent {
-    #[default]
-    Empty,
-    Bomb,
-    Number(u8),
-}
-
-#[derive(PartialEq, Copy, Clone, Default)]
-enum CellState {
-    Opened,
-    #[default]
-    Closed,
-    Flagged,
-}
-
-#[derive(Default, Copy, Clone, PartialEq)]
-struct Cell {
-    content: CellContent,
-    state: CellState,
-    pos: BlockPos,
-}
 
 const BOMB_AMT: usize = 40;
 
@@ -37,7 +15,9 @@ pub struct MineSweeperGame<const DIM: usize> {
     is_build: bool,
     should_despawn: bool,
     is_over: bool,
+    is_won: bool,
     flag_lock: u8,
+    comp_time: usize,
 }
 
 impl<const DIM: usize> MineSweeperGame<DIM> {
@@ -48,7 +28,9 @@ impl<const DIM: usize> MineSweeperGame<DIM> {
             is_build: false,
             should_despawn: false,
             is_over: false,
+            is_won: false,
             flag_lock: 0,
+            comp_time: 0,
         }
     }
     fn generate_board(bomb_amt: usize, pos: BlockPos) -> [[Cell; DIM]; DIM] {
@@ -113,19 +95,51 @@ impl<const DIM: usize> MineSweeperGame<DIM> {
         }
         return array;
     }
+
+    fn regenerate_if_not_empty(
+        &mut self,
+        click_pos: &BlockPos,
+        player: Entity,
+        layer: &mut ChunkLayer,
+    ) -> bool {
+        if self
+            .board
+            .flatten()
+            .iter()
+            .all(|e| e.state == CellState::Closed)
+        {
+            tracing::warn!(
+                "minesweeper: a bomb or number was the first clicked cell. Generating new Board."
+            );
+            self.board = Self::generate_board(BOMB_AMT, self.board[0][0].pos);
+            self.click_left(click_pos, player, layer);
+            return true;
+        }
+        return false;
+    }
 }
 
 impl<const DIM: usize> CustomGame for MineSweeperGame<DIM> {
     fn build_blocks(&mut self, layer: &mut ChunkLayer) -> Result<(), BuildGameError> {
+        if (0..DIM).cartesian_product(0..DIM).any(|(x, y)| {
+            layer
+                .block(self.board[y][x].pos)
+                .is_some_and(|b| !b.state.is_air())
+        }) {
+            return Err(BuildGameError::BlocksInTheWay);
+        }
         for (x, y) in (0..DIM).cartesian_product(0..DIM) {
             let block = BlockState::MOSS_BLOCK;
-            // let block = get_num_color(self.base_board[y][x]);
+            // let block = get_num_color(self.board[y][x].content);
             layer.set_block(self.board[y][x].pos, block);
         }
         self.is_build = true;
         return Ok(());
     }
     fn tick(&mut self, _layer: &mut ChunkLayer) {
+        if !self.is_over {
+            self.comp_time += 1;
+        }
         if self.flag_lock > 0 {
             self.flag_lock -= 1;
         }
@@ -162,14 +176,7 @@ impl<const DIM: usize> CustomGame for MineSweeperGame<DIM> {
                 match self.board[y][x].state {
                     CellState::Closed => match self.board[y][x].content {
                         CellContent::Bomb => {
-                            if self
-                                .board
-                                .flatten()
-                                .iter()
-                                .all(|e| e.state == CellState::Closed)
-                            {
-                                tracing::warn!("minesweeper: a bomb was the first clicked cell. Generating new Board.");
-                                self.board = Self::generate_board(BOMB_AMT, self.board[0][0].pos);
+                            if self.regenerate_if_not_empty(click_pos, player, layer) {
                                 return;
                             }
                             sound(layer, Sound::EntityGenericExplode, click_pos);
@@ -195,6 +202,9 @@ impl<const DIM: usize> CustomGame for MineSweeperGame<DIM> {
                             }
                         }
                         CellContent::Number(_) => {
+                            if self.regenerate_if_not_empty(click_pos, player, layer) {
+                                return;
+                            }
                             sound(layer, Sound::EntityFrogStep, click_pos);
                             self.board[y][x].state = CellState::Opened;
                             let b = layer
@@ -221,53 +231,32 @@ impl<const DIM: usize> CustomGame for MineSweeperGame<DIM> {
                         &self.board[DIM / 2][DIM / 2].pos,
                     );
                     self.is_over = true;
+                    self.is_won = true;
                 }
             }
         }
     }
-    fn reset(&self, layer: &mut ChunkLayer, _pgsql: &mut crate::postgres_wrapper::PostgresWrapper) {
+    fn reset(&self, layer: &mut ChunkLayer, pgsql: &mut crate::postgres_wrapper::PostgresWrapper) {
         for x in 0..DIM {
             for y in 0..DIM {
                 layer.set_block(self.board[y][x].pos, BlockState::AIR);
             }
         }
-        // TODO add database integration
+
+        if self.is_won {
+            pgsql.insert_minesweeper(
+                DIM as i32,
+                2,
+                self.comp_time as i32,
+                BOMB_AMT as i32,
+                self.player.1,
+            );
+        }
     }
     fn get_player(&self) -> (Entity, UniqueId) {
         self.player
     }
     fn should_despawn(&self) -> bool {
         self.should_despawn
-    }
-}
-
-fn sound(layer: &mut ChunkLayer, sound: Sound, loc: &BlockPos) {
-    layer.play_sound(
-        sound,
-        SoundCategory::Ambient,
-        DVec3::new(loc.x.into(), loc.y.into(), loc.z.into()),
-        20.0,
-        1.0,
-    );
-}
-
-fn get_num_color(cell: CellContent) -> BlockState {
-    match cell {
-        CellContent::Empty => BlockState::STONE,
-        CellContent::Bomb => BlockState::TNT,
-        CellContent::Number(n) => match n {
-            1 => BlockState::BLUE_GLAZED_TERRACOTTA,
-            2 => BlockState::GREEN_GLAZED_TERRACOTTA,
-            3 => BlockState::RED_GLAZED_TERRACOTTA,
-            4 => BlockState::BLACK_GLAZED_TERRACOTTA,
-            5 => BlockState::ORANGE_GLAZED_TERRACOTTA,
-            6 => BlockState::LIGHT_BLUE_GLAZED_TERRACOTTA,
-            7 => BlockState::PURPLE_GLAZED_TERRACOTTA,
-            8 => BlockState::GRAY_GLAZED_TERRACOTTA,
-            _ => {
-                tracing::error!("unknown number of bombs: {}", n);
-                unimplemented!();
-            }
-        },
     }
 }

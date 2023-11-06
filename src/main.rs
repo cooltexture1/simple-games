@@ -3,17 +3,18 @@
 mod custom_game;
 mod items;
 mod minesweeper;
-mod minesweeper3d;
 mod postgres_wrapper;
 mod repeat_sequence;
 
 use items::*;
 use minesweeper::MineSweeperGame;
-use minesweeper3d::MineSweeperGame3d;
+use minesweeper::MineSweeperGame3d;
 use postgres::NoTls;
 use postgres_wrapper::PostgresWrapper;
 use repeat_sequence::RepeatSequenceGame;
 
+use valence::message::ChatMessageEvent;
+use valence::world_border::WorldBorderBundle;
 use valence::{
     interact_item::InteractItemEvent,
     inventory::HeldItem,
@@ -36,6 +37,7 @@ fn main() {
                 init_clients,
                 despawn_disconnected_clients,
                 item_use_listener,
+                chat_handler,
             ),
         )
         .add_plugins(CustomGamePlugin)
@@ -59,23 +61,44 @@ fn setup(
             &[],
         )
         .unwrap();
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS minesweeper_games (
+        date TIMESTAMP,
+        size INT,
+        dim INT,
+        comp_time INT,
+        bomb_amt INT,
+        player_uuid BYTEA
+);",
+            &[],
+        )
+        .unwrap();
     } else {
         tracing::warn!("Couldnt establish database connection");
     }
 
     let mut layer = LayerBundle::new(ident!("overworld"), &dimensions, &biomes, &server);
-    for z in -5..5 {
-        for x in -5..5 {
+    for z in -7..7 {
+        for x in -7..7 {
             layer.chunk.insert_chunk([x, z], UnloadedChunk::new());
         }
     }
 
-    for z in -25..25 {
+    for z in -125..125 {
         for x in -25..25 {
-            layer.chunk.set_block([x, 64, z], BlockState::GRASS_BLOCK);
+            if z < 100 && z > -100 {
+                layer.chunk.set_block([x, 64, z], BlockState::GRASS_BLOCK);
+            } else {
+                layer
+                    .chunk
+                    .set_block([x, 64, z], BlockState::DEEPSLATE_BRICKS);
+            }
         }
     }
-    commands.spawn(layer);
+    let mut wb = WorldBorderBundle::default();
+    wb.lerp.current_diameter = 150.0;
+    wb.lerp.target_diameter = 150.0;
+    commands.spawn((layer, wb));
 }
 
 fn init_clients(
@@ -89,6 +112,7 @@ fn init_clients(
             &mut Client,
             &mut Inventory,
             &UniqueId,
+            &Username,
         ),
         Added<Client>,
     >,
@@ -104,8 +128,10 @@ fn init_clients(
         mut client,
         mut inv,
         uuid,
+        username,
     ) in &mut clients
     {
+        tracing::info!("{} logged on", username);
         let layer = layers.single();
 
         layer_id.0 = layer;
@@ -123,9 +149,21 @@ fn init_clients(
             client.send_chat_message(format!("Your Highest Streak: {}", streak));
         }
 
+        if let Some((size, dim, comp_time)) = database.get_minesweeper_fastest(uuid) {
+            let d = match dim {
+                2 => "2D",
+                3 => "3D",
+                _ => unreachable!(),
+            };
+            client.send_chat_message(format!(
+                "Your fastest minesweeper game took: {} seconds, it was a {dim}x{dim} {d} game",
+                comp_time / 20
+            ));
+        }
+
         client.set_resource_pack(
             "https://bits-mampfer.eu/tubnet-tourneys/minesweeper_resources.zip",
-            "1a4572a45c4a24d94970ff13ef1499950bb721bc",
+            "0ff6f1c2f43e03733090d08a44cecadccf2c532a",
             true,
             Some(Text::from("Install the minesweeper textures?")),
         );
@@ -156,11 +194,29 @@ fn item_use_listener(
                     let msg = MineSweeperGame::<20>::new(pos, (interaction.client, *uuid));
                     commands.spawn(CustomGameContainer(Box::new(msg)));
                 }
-                StartItemType::Minesweeper3D => {
-                    let msg = MineSweeperGame3d::<20>::new(pos, (interaction.client, *uuid));
+                // StartItemType::Minesweeper3D20x20 => {
+                //     let msg = MineSweeperGame3d::<20>::new(pos, (interaction.client, *uuid));
+                //     commands.spawn(CustomGameContainer(Box::new(msg)));
+                // }
+                StartItemType::Minesweeper3D10x10 => {
+                    let msg = MineSweeperGame3d::<10>::new(pos, (interaction.client, *uuid));
                     commands.spawn(CustomGameContainer(Box::new(msg)));
                 }
+                _ => (),
             }
+        }
+    }
+}
+
+fn chat_handler(
+    mut messages: EventReader<ChatMessageEvent>,
+    mut players: Query<(&mut Client, &Username)>,
+) {
+    for message in messages.iter() {
+        let sender = players.get(message.client).unwrap().1 .0.clone();
+        let msg: &str = message.message.as_ref();
+        for mut player in players.iter_mut() {
+            player.0.send_chat_message(format!("<{}> {}", sender, msg))
         }
     }
 }

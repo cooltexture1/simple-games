@@ -1,3 +1,4 @@
+use super::common::*;
 use crate::custom_game::{BuildGameError, CustomGame};
 use itertools::Itertools;
 use rand::Rng;
@@ -6,30 +7,7 @@ use valence::{
     protocol::{sound::SoundCategory, Sound},
 };
 
-#[derive(PartialEq, Copy, Clone, Debug, Default)]
-enum CellContent {
-    #[default]
-    Empty,
-    Bomb,
-    Number(u8),
-}
-
-#[derive(PartialEq, Copy, Clone, Default)]
-enum CellState {
-    Opened,
-    #[default]
-    Closed,
-    Flagged,
-}
-
-#[derive(Default, Copy, Clone, PartialEq)]
-struct Cell {
-    content: CellContent,
-    state: CellState,
-    pos: BlockPos,
-}
-
-const BOMB_AMT: usize = 100;
+const BOMB_AMT: usize = 130;
 
 pub struct MineSweeperGame3d<const DIM: usize> {
     board: [[[Cell; DIM]; DIM]; DIM],
@@ -37,7 +15,9 @@ pub struct MineSweeperGame3d<const DIM: usize> {
     is_build: bool,
     should_despawn: bool,
     is_over: bool,
+    is_won: bool,
     flag_lock: u8,
+    comp_time: usize,
 }
 
 impl<const DIM: usize> MineSweeperGame3d<DIM> {
@@ -48,7 +28,9 @@ impl<const DIM: usize> MineSweeperGame3d<DIM> {
             is_build: false,
             should_despawn: false,
             is_over: false,
+            is_won: false,
             flag_lock: 0,
+            comp_time: 0,
         }
     }
     fn generate_board(bomb_amt: usize, pos: BlockPos) -> [[[Cell; DIM]; DIM]; DIM] {
@@ -71,7 +53,7 @@ impl<const DIM: usize> MineSweeperGame3d<DIM> {
         }
         // fill in numbers and positions
         for ((x, y), z) in Self::coords_iterator() {
-            base[z][y][x].pos = pos.offset(x as i32, 0, y as i32);
+            base[z][y][x].pos = pos.offset(x as i32 * 3, z as i32 * 3, y as i32 * 3);
             if base[z][y][x].content == CellContent::Bomb {
                 continue;
             } else {
@@ -93,45 +75,83 @@ impl<const DIM: usize> MineSweeperGame3d<DIM> {
         let mut bomb_count: u8 = 0;
         for scan_x in x as isize - 1..=x as isize + 1 {
             for scan_y in y as isize - 1..=y as isize + 1 {
-                if board.get(scan_y as usize).is_some_and(|y| {
-                    y.get(scan_x as usize)
-                        .is_some_and(|c| c.content == CellContent::Bomb)
-                }) {
-                    bomb_count += 1;
+                for scan_z in z as isize - 1..=z as isize + 1 {
+                    if board.get(scan_z as usize).is_some_and(|e| {
+                        e.get(scan_y as usize).is_some_and(|y| {
+                            y.get(scan_x as usize)
+                                .is_some_and(|c| c.content == CellContent::Bomb)
+                        })
+                    }) {
+                        bomb_count += 1;
+                    }
                 }
             }
         }
         return bomb_count;
     }
 
-    fn get_adjacent_cells(&self, (x, y): (usize, usize)) -> Vec<(usize, usize)> {
-        let mut array: Vec<(usize, usize)> = vec![];
+    fn get_adjacent_cells(&self, (x, y, z): (usize, usize, usize)) -> Vec<(usize, usize, usize)> {
+        let mut array: Vec<(usize, usize, usize)> = vec![];
         for scan_x in x as isize - 1..=x as isize + 1 {
             for scan_y in y as isize - 1..=y as isize + 1 {
-                if self
-                    .board
-                    .get(scan_y as usize)
-                    .is_some_and(|y| y.get(scan_x as usize).is_some())
-                {
-                    array.push((scan_x as usize, scan_y as usize));
+                for scan_z in z as isize - 1..=z as isize + 1 {
+                    if self.board.get(scan_z as usize).is_some_and(|e| {
+                        e.get(scan_y as usize)
+                            .is_some_and(|y| y.get(scan_x as usize).is_some())
+                    }) {
+                        array.push((scan_x as usize, scan_y as usize, scan_z as usize));
+                    }
                 }
             }
         }
         return array;
     }
+
+    fn regenerate_if_not_empty(
+        &mut self,
+        click_pos: &BlockPos,
+        player: Entity,
+        layer: &mut ChunkLayer,
+    ) -> bool {
+        if self
+            .board
+            .flatten()
+            .flatten()
+            .iter()
+            .all(|e| e.state == CellState::Closed)
+        {
+            tracing::warn!(
+                "minesweeper: a bomb or number was the first clicked cell. Generating new Board."
+            );
+            self.board = Self::generate_board(BOMB_AMT, self.board[0][0][0].pos);
+            self.click_left(click_pos, player, layer);
+            return true;
+        }
+        return false;
+    }
 }
 
 impl<const DIM: usize> CustomGame for MineSweeperGame3d<DIM> {
     fn build_blocks(&mut self, layer: &mut ChunkLayer) -> Result<(), BuildGameError> {
-        for (x, y) in (0..DIM).cartesian_product(0..DIM) {
-            // let block = BlockState::MOSS_BLOCK;
-            let block = get_num_color(self.base_board[y][x]);
-            layer.set_block(self.board[y][x].pos, block);
+        if Self::coords_iterator().into_iter().any(|((x, y), z)| {
+            layer
+                .block(self.board[z][y][x].pos)
+                .is_some_and(|b| !b.state.is_air())
+        }) {
+            return Err(BuildGameError::BlocksInTheWay);
+        }
+        for ((x, y), z) in Self::coords_iterator() {
+            let block = BlockState::MOSS_BLOCK;
+            // let block = get_num_color(self.board[z][y][x].content);
+            layer.set_block(self.board[z][y][x].pos, block);
         }
         self.is_build = true;
         return Ok(());
     }
     fn tick(&mut self, _layer: &mut ChunkLayer) {
+        if !self.is_over {
+            self.comp_time += 1;
+        }
         if self.flag_lock > 0 {
             self.flag_lock -= 1;
         }
@@ -140,18 +160,18 @@ impl<const DIM: usize> CustomGame for MineSweeperGame3d<DIM> {
         if self.flag_lock != 0 {
             return;
         }
-        for (x, y) in (0..DIM).cartesian_product(0..DIM) {
-            let pos = self.board[y][x].pos;
+        for ((x, y), z) in Self::coords_iterator() {
+            let pos = self.board[z][y][x].pos;
             if pos == *click_pos {
                 self.flag_lock = 4;
-                match self.board[y][x].state {
+                match self.board[z][y][x].state {
                     CellState::Closed => {
                         layer.set_block(pos, BlockState::RED_WOOL);
-                        self.board[y][x].state = CellState::Flagged;
+                        self.board[z][y][x].state = CellState::Flagged;
                     }
                     CellState::Flagged => {
                         layer.set_block(pos, BlockState::MOSS_BLOCK);
-                        self.board[y][x].state = CellState::Closed;
+                        self.board[z][y][x].state = CellState::Closed;
                     }
                     _ => (),
                 }
@@ -163,37 +183,28 @@ impl<const DIM: usize> CustomGame for MineSweeperGame3d<DIM> {
             self.should_despawn = true;
             return;
         }
-        for (x, y) in (0..DIM).cartesian_product(0..DIM) {
-            if self.board[y][x].pos == *click_pos {
-                match self.board[y][x].state {
-                    CellState::Closed => match self.board[y][x].content {
+        for ((x, y), z) in Self::coords_iterator() {
+            if self.board[z][y][x].pos == *click_pos {
+                match self.board[z][y][x].state {
+                    CellState::Closed => match self.board[z][y][x].content {
                         CellContent::Bomb => {
-                            if self
-                                .board
-                                .flatten()
-                                .iter()
-                                .all(|e| e.state == CellState::Closed)
-                            {
-                                tracing::warn!("minesweeper: a bomb was the first clicked cell. Generating new Board.");
-                                self.board = Self::generate_board(BOMB_AMT, self.board[0][0].pos);
+                            if self.regenerate_if_not_empty(click_pos, player, layer) {
                                 return;
                             }
                             sound(layer, Sound::EntityGenericExplode, click_pos);
-                            for x in 0..DIM {
-                                for y in 0..DIM {
-                                    let block = get_num_color(self.board[y][x].content);
-                                    layer.set_block(self.board[y][x].pos, block);
-                                }
+                            for ((x, y), z) in Self::coords_iterator() {
+                                let block = get_num_color(self.board[z][y][x].content);
+                                layer.set_block(self.board[z][y][x].pos, block);
                             }
                             self.is_over = true;
                         }
                         CellContent::Empty => {
                             sound(layer, Sound::EntityFrogStep, click_pos);
-                            self.board[y][x].state = CellState::Opened;
-                            let block = get_num_color(self.board[y][x].content);
-                            layer.set_block(self.board[y][x].pos, block);
-                            for adj in self.get_adjacent_cells((x, y)) {
-                                let cell = self.board[adj.1][adj.0];
+                            self.board[z][y][x].state = CellState::Opened;
+                            let block = get_num_color(self.board[z][y][x].content);
+                            layer.set_block(self.board[z][y][x].pos, block);
+                            for adj in self.get_adjacent_cells((x, y, z)) {
+                                let cell = self.board[adj.2][adj.1][adj.0];
                                 if cell.state == CellState::Closed {
                                     // simulate click on adjacent empty fields
                                     self.click_left(&cell.pos, player, layer);
@@ -201,10 +212,13 @@ impl<const DIM: usize> CustomGame for MineSweeperGame3d<DIM> {
                             }
                         }
                         CellContent::Number(_) => {
+                            if self.regenerate_if_not_empty(click_pos, player, layer) {
+                                return;
+                            }
                             sound(layer, Sound::EntityFrogStep, click_pos);
-                            self.board[y][x].state = CellState::Opened;
+                            self.board[z][y][x].state = CellState::Opened;
                             let b = layer
-                                .set_block(*click_pos, get_num_color(self.board[y][x].content));
+                                .set_block(*click_pos, get_num_color(self.board[z][y][x].content));
                             if !(b.clone().is_some_and(|b| b.state == BlockState::MOSS_BLOCK)) {
                                 tracing::error!(
                                         "something went wrong clicking a minesweeper field, replaced block: {:?}",
@@ -217,63 +231,44 @@ impl<const DIM: usize> CustomGame for MineSweeperGame3d<DIM> {
                 }
                 if !self.is_over
                     && (0..DIM).cartesian_product(0..DIM).all(|(x, y)| {
-                        self.board[y][x].state == CellState::Opened
-                            || self.board[y][x].content == CellContent::Bomb
+                        self.board[z][y][x].state == CellState::Opened
+                            || self.board[z][y][x].content == CellContent::Bomb
                     })
                 {
                     sound(
                         layer,
                         Sound::ItemGoatHornSound1,
-                        &self.board[DIM / 2][DIM / 2].pos,
+                        &self.board[DIM / 2][DIM / 2][DIM / 2].pos,
                     );
+                    self.is_won = true;
                     self.is_over = true;
                 }
             }
         }
     }
-    fn reset(&self, layer: &mut ChunkLayer, _pgsql: &mut crate::postgres_wrapper::PostgresWrapper) {
+    fn reset(&self, layer: &mut ChunkLayer, pgsql: &mut crate::postgres_wrapper::PostgresWrapper) {
         for x in 0..DIM {
             for y in 0..DIM {
-                layer.set_block(self.board[y][x].pos, BlockState::AIR);
+                for z in 0..DIM {
+                    layer.set_block(self.board[z][y][x].pos, BlockState::AIR);
+                }
             }
         }
-        // TODO add database integration
+
+        if self.is_won {
+            pgsql.insert_minesweeper(
+                DIM as i32,
+                3,
+                self.comp_time as i32,
+                BOMB_AMT as i32,
+                self.player.1,
+            );
+        }
     }
     fn get_player(&self) -> (Entity, UniqueId) {
         self.player
     }
     fn should_despawn(&self) -> bool {
         self.should_despawn
-    }
-}
-
-fn sound(layer: &mut ChunkLayer, sound: Sound, loc: &BlockPos) {
-    layer.play_sound(
-        sound,
-        SoundCategory::Ambient,
-        DVec3::new(loc.x.into(), loc.y.into(), loc.z.into()),
-        20.0,
-        1.0,
-    );
-}
-
-fn get_num_color(cell: CellContent) -> BlockState {
-    match cell {
-        CellContent::Empty => BlockState::STONE,
-        CellContent::Bomb => BlockState::TNT,
-        CellContent::Number(n) => match n {
-            1 => BlockState::BLUE_GLAZED_TERRACOTTA,
-            2 => BlockState::GREEN_GLAZED_TERRACOTTA,
-            3 => BlockState::RED_GLAZED_TERRACOTTA,
-            4 => BlockState::BLACK_GLAZED_TERRACOTTA,
-            5 => BlockState::ORANGE_GLAZED_TERRACOTTA,
-            6 => BlockState::LIGHT_BLUE_GLAZED_TERRACOTTA,
-            7 => BlockState::PURPLE_GLAZED_TERRACOTTA,
-            8 => BlockState::GRAY_GLAZED_TERRACOTTA,
-            _ => {
-                tracing::error!("unknown number of bombs: {}", n);
-                unimplemented!();
-            }
-        },
     }
 }
