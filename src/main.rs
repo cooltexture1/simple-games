@@ -26,6 +26,11 @@ use custom_game::{CustomGameContainer, CustomGamePlugin};
 
 fn main() {
     App::new()
+        .insert_resource(NetworkSettings {
+            connection_mode: ConnectionMode::Offline,
+            address: "0.0.0.0:25567".parse().unwrap(),
+            ..Default::default()
+        })
         .add_plugins(DefaultPlugins.set(LogPlugin {
             level: Level::INFO,
             ..Default::default()
